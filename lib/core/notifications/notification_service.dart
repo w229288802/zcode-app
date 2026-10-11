@@ -160,7 +160,13 @@ class NotificationService {
     required String toolName,
     String? reason,
   }) {
-    if (!_shownPermissionIds.add(permissionId)) return;
+    if (!_initialized || !_isAppInBackground) return;
+    final requestKey = '$workspaceKey/$taskId/$permissionId';
+    if (!_shownPermissionIds.add(requestKey)) return;
+    // 只保留近期请求，避免长时间运行时去重集合持续增长。
+    if (_shownPermissionIds.length > 256) {
+      _shownPermissionIds.remove(_shownPermissionIds.first);
+    }
     final id = _idPermissionBase + (permissionId.hashCode & 0x3FF);
     _showEvent(
       id: id,
