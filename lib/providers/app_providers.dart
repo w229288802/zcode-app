@@ -573,10 +573,23 @@ void _upsertIndexSessions(
   for (final s in sessions) {
     final task = _taskFromIndexSession(ws, s);
     final i = tasks.indexWhere((t) => t.id == task.id);
+    final previous = i >= 0 ? tasks[i] : null;
     if (i >= 0) {
       tasks[i] = task;
     } else {
       tasks.insert(0, task);
+    }
+    if (previous != null &&
+        !previous.archived &&
+        previous.status == TaskStatus.running &&
+        !task.archived &&
+        task.status != TaskStatus.running) {
+      appLog.i('[SessionsIndex] 任务完成: ${task.title} (${task.id})');
+      NotificationService.notifyTurnComplete(
+        taskId: task.id,
+        workspaceKey: task.workspaceKey,
+        sessionTitle: task.title,
+      );
     }
     changed = true;
   }

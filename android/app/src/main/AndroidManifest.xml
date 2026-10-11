@@ -3,6 +3,9 @@
     <uses-permission android:name="android.permission.INTERNET"/>
     <!-- 相机权限 (扫码) -->
     <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- Android 13+ 显示任务完成/提问/权限请求通知所需的运行时权限。
+         仅调用 requestNotificationsPermission 不会自动写入 Manifest。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- 应用内更新: 下载 APK 后调系统安装器 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <!-- 前台服务保活 (remoteMessaging 类型: Android 15 对 dataSync 有 6 小时限制,
