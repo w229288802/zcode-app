@@ -15,6 +15,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/logging/app_logger.dart';
+import '../../../core/notifications/notification_service.dart';
 import '../../../core/relay/relay_events.dart';
 import '../../../core/relay/relay_protocol.dart';
 import '../../../core/services/update_service.dart';
@@ -114,6 +115,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   @override
   void initState() {
     super.initState();
+    if (widget.taskId != null) NotificationService.clearTurnComplete();
     // 切项目 (replace 重建本页) 后首帧直接跳到抽屉全开 — 无动画,
     // 避免"先看到关着再弹开"的闪动; 旗标用后即清
     if (ChatScreen.keepDrawerOpenOnNextInit) {
@@ -128,6 +130,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _chatScaffoldKey.currentState?.requestComposerFocus();
       });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant ChatScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.taskId != null && widget.taskId != oldWidget.taskId) {
+      NotificationService.clearTurnComplete();
     }
   }
 

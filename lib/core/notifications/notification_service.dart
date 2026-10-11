@@ -143,6 +143,12 @@ class NotificationService {
     );
   }
 
+  /// 进入会话后移除任务完成通知。
+  static void clearTurnComplete() {
+    if (!_initialized) return;
+    _local.cancel(id: _idTurnComplete);
+  }
+
   /// 工具权限确认请求
   static void notifyPermission({
     required String taskId,
