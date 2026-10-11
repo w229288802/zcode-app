@@ -31,6 +31,9 @@ class NotificationService {
   static const _idPermissionBase = 2000;
   static const _idQuestion = 3000;
 
+  /// 同一权限请求可能同时从会话流和全局 sessions-index 到达，只提醒一次。
+  static final Set<String> _shownPermissionIds = {};
+
   static const _eventsChannel = AndroidNotificationDetails(
     'zcode_events',
     '任务事件',
@@ -157,6 +160,7 @@ class NotificationService {
     required String toolName,
     String? reason,
   }) {
+    if (!_shownPermissionIds.add(permissionId)) return;
     final id = _idPermissionBase + (permissionId.hashCode & 0x3FF);
     _showEvent(
       id: id,

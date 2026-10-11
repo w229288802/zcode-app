@@ -572,6 +572,18 @@ void _upsertIndexSessions(
   var changed = false;
   for (final s in sessions) {
     final task = _taskFromIndexSession(ws, s);
+    final pending = s['pendingInteraction'];
+    if (pending is Map && pending['kind'] == 'permission') {
+      final interactionId = pending['interactionId']?.toString() ?? '';
+      if (interactionId.isNotEmpty) {
+        NotificationService.notifyPermission(
+          taskId: task.id,
+          workspaceKey: task.workspaceKey,
+          permissionId: interactionId,
+          toolName: pending['toolName']?.toString() ?? 'AI 操作',
+        );
+      }
+    }
     final i = tasks.indexWhere((t) => t.id == task.id);
     final previous = i >= 0 ? tasks[i] : null;
     if (i >= 0) {
