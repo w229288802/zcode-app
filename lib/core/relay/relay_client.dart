@@ -825,7 +825,8 @@ class RelayClient {
     _sendRpcFrameData(data);
 
     Future.delayed(timeout, () {
-      if (_pendingRpc.containsKey(id)) {
+      // 重连会重用请求编号；旧请求的超时不能移除新连接上的同号请求。
+      if (identical(_pendingRpc[id], completer)) {
         _pendingRpc.remove(id);
         completer.completeError(
           TimeoutException('RPC timeout: $channel.$method'),
@@ -1625,9 +1626,9 @@ class RelayClient {
 
     if (resp.body is Map) {
       final body = resp.body as Map<String, dynamic>;
-      // ★ 服务端命令裁决: rejected 必须抛错 — 否则调用方静默失败
+      // 服务端拒绝、过期或执行失败都必须交给调用方显示错误。
       //   (曾导致 rewind/editUserQuery 无效果但 UI 无任何提示)
-      if (body['status'] == 'rejected') {
+      if (const {'rejected', 'stale', 'failed'}.contains(body['status'])) {
         final msg = body['message'] is List
             ? (body['message'] as List).map((e) => '$e').join('; ')
             : '${body['message'] ?? ''}';

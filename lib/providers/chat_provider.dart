@@ -809,6 +809,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
   bool _creating = false;
   bool _initDone = false;
   bool _initRunning = false; // _init 进行中禁止 resubscribe (会取消 init 的帧监听)
+  Future<void>? _initFuture;
+  Future<void>? _resubscribeFuture;
 
   /// V4 状态: 本地缓存的 rows (按 rowId 索引)。
   /// SplayTreeMap: 按 rowId 升序迭代, 重建时免去每帧 O(n log n) 排序。
@@ -939,7 +941,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
     _taskId = _ref.taskId;
     // 已有 taskId: 立即加载历史+订阅; 新会话: 等首发消息
     if (_taskId != null) {
-      _init();
+      _initFuture = _init();
     }
     // 监听 RPC ready 变化: bridge degraded → reopen 后重新订阅。
     // 加标志位避免初始化期间触发 (会死循环)。
@@ -948,11 +950,15 @@ class ChatNotifier extends StateNotifier<ChatState> {
     //   true → 曾经的 !isResponding 守卫导致重连后永远不再订阅,
     //   会话内容从此不刷新。
     _rpcReadySub = _relay.onRpcReadyChange.listen((ready) {
-      if (ready && _taskId != null && _initDone && !_initRunning) {
-        appLog.i('[Chat] RPC ready (重连后), 重新订阅 V4 事件流...');
+      if (!ready) {
         _frameSub?.cancel();
         _frameSub = null;
-        _resubscribe();
+        return;
+      }
+      if (_taskId != null && _initDone && !_initRunning) {
+        appLog.i('[Chat] RPC ready (重连后), 重新订阅 V4 事件流...');
+        // 后台恢复失败已在 _resubscribe 中记录；用户再次发送时可以重试。
+        unawaited(_resubscribe().catchError((_) {}));
       }
     });
   }
@@ -2489,6 +2495,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
     if (queued) {
       state = state.copyWith(error: null);
       try {
+        await _ensureSessionReady(taskTitle: content);
         await _relay.sendConversationCommandV4(
           workspacePath: _ref.workspacePath,
           workspaceIdentity: _ref.workspaceIdentity,
@@ -2541,9 +2548,17 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
   /// 新会话引导 (sendMessage / sendMessageWithAttachments 共用, 行为同原
   /// sendMessage 内联块): bridge 复用 → 幂等握手 → createSession → 热切换
-  /// 模型 → 通知任务列表 → 订阅会话流。已有 taskId 时幂等直通。
+  /// 模型 → 通知任务列表 → 订阅会话流。已有会话也要等待连接和订阅恢复。
   Future<void> _ensureSessionReady({required String taskTitle}) async {
-    if (_taskId != null) return;
+    if (_taskId != null) {
+      if (_initRunning) await _initFuture;
+      await _relay.waitRpcReady(const Duration(seconds: 12));
+      await _relay.v4Handshake();
+      if (_resubscribeFuture != null || _frameSub == null) {
+        await _resubscribe();
+      }
+      return;
+    }
     _creating = true;
     // bridge 复用 (打开工作区时已开) + 幂等握手
     await _relay.ensureBridgeOpen(_ref.workspaceIdentity ?? _ref.workspacePath);
@@ -2588,6 +2603,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
       sessionId: _taskId!,
     );
     _frameSub = stream.listen(_onV4Frame);
+    // 新会话也必须参与后续的 RPC 重连恢复。
+    _initDone = true;
   }
 
   /// 带附件发送 (图片走 V4 分片上传, 对齐网页端)。
@@ -2950,9 +2967,18 @@ class ChatNotifier extends StateNotifier<ChatState> {
   }
 
   /// bridge 重连后重新订阅 V4 事件流
-  Future<void> _resubscribe() async {
-    if (_taskId == null) return;
+  Future<void> _resubscribe() {
+    // 自动恢复和用户发送共用一次订阅，避免互相取消监听。
+    return _resubscribeFuture ??= _doResubscribe().whenComplete(
+      () => _resubscribeFuture = null,
+    );
+  }
+
+  Future<void> _doResubscribe() async {
+    if (_taskId == null || _disposedNotifier) return;
     try {
+      await _frameSub?.cancel();
+      _frameSub = null;
       // V4 handshake + subscribe
       await _relay.v4Handshake();
       final stream = await _relay.subscribeConversationV4(
@@ -2960,6 +2986,10 @@ class ChatNotifier extends StateNotifier<ChatState> {
         workspaceIdentity: _ref.workspaceIdentity,
         sessionId: _taskId!,
       );
+      if (_disposedNotifier) {
+        await stream.listen((_) {}).cancel();
+        return;
+      }
       // 与 _init 同款: 流快照 completer 重置 (新订阅可能推新快照)
       _streamSnapshotDone = Completer<void>();
       _frameSub = stream.listen((f) {
@@ -2969,13 +2999,22 @@ class ChatNotifier extends StateNotifier<ChatState> {
           if (c != null && !c.isCompleted) c.complete();
         }
       });
+      _initDone = true;
       // ★ 补拉断连期间错过的行: 行日志 append-only, 尾部读按 rowId 幂等
       //   合并 (没错过就 merged=0); turn 若已服务端完成, 补回的行含
       //   非 running control → fall timer 自然清掉卡住的 isResponding
-      await _fetchRowsRange();
-      appLog.i('[Chat] V4 resubscribe ✓ (尾部补拉完成)');
+      try {
+        await _fetchRowsRange();
+        appLog.i('[Chat] V4 resubscribe ✓ (尾部补拉完成)');
+      } catch (e) {
+        appLog.w('[Chat] 重订阅成功，但尾部补拉失败: $e');
+      }
     } catch (e) {
       appLog.e('[Chat] V4 resubscribe FAILED: $e');
+      if (!_disposedNotifier) {
+        state = state.copyWith(error: '对话同步失败，请重试: $e');
+      }
+      rethrow;
     }
   }
 
