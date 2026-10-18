@@ -43,8 +43,8 @@ jobs:
       - name: Install dependencies
         run: flutter pub get --enforce-lockfile
 
-      - name: Test chat connection recovery
-        run: flutter test test/chat_connection_recovery_test.dart test/relay_request_recovery_test.dart test/notification_sound_test.dart
+      - name: Test chat recovery and notifications
+        run: flutter test test/chat_connection_recovery_test.dart test/relay_request_recovery_test.dart test/notification_sound_test.dart test/notification_service_test.dart
 
       - name: Generate iOS app icon
         shell: bash

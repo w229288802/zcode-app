@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:flutter/widgets.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
@@ -53,6 +54,7 @@ class NotificationService {
       await _local.initialize(
         settings: const InitializationSettings(
           android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+          iOS: DarwinInitializationSettings(),
         ),
         onDidReceiveNotificationResponse: _onNotificationTap,
       );
@@ -93,7 +95,7 @@ class NotificationService {
   static var _serviceStarted = false;
 
   static Future<void> startKeepAlive() async {
-    if (!_initialized || _serviceStarted) return;
+    if (!Platform.isAndroid || !_initialized || _serviceStarted) return;
     final result = await FlutterForegroundTask.startService(
       serviceId: 256,
       serviceTypes: [ForegroundServiceTypes.remoteMessaging],
@@ -150,6 +152,16 @@ class NotificationService {
   static void clearTurnComplete() {
     if (!_initialized) return;
     _local.cancel(id: _idTurnComplete);
+  }
+
+  /// 打开应用时清除已有事件通知，保留通知权限和后续通知能力。
+  static Future<void> clearAll() async {
+    if (!_initialized) return;
+    try {
+      await _local.cancelAll();
+    } catch (e) {
+      appLog.w('[Notify] 清除通知失败: $e');
+    }
   }
 
   /// 工具权限确认请求
@@ -212,7 +224,10 @@ class NotificationService {
       id: id,
       title: title,
       body: body.length > 120 ? '${body.substring(0, 120)}…' : body,
-      notificationDetails: const NotificationDetails(android: _eventsChannel),
+      notificationDetails: const NotificationDetails(
+        android: _eventsChannel,
+        iOS: DarwinNotificationDetails(),
+      ),
       payload: payload,
     );
     appLog.i('[Notify] 事件通知: $title');

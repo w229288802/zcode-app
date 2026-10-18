@@ -9,6 +9,22 @@ def main():
     ios = Path("ios")
     minimum_ios = "15.5"
 
+    # 通知插件要求 AppDelegate 接收 iOS 通知回调。
+    delegate_path = ios / "Runner/AppDelegate.swift"
+    delegate = delegate_path.read_text(encoding="utf-8")
+    if "UNUserNotificationCenter.current().delegate" not in delegate:
+        anchor = "    return super.application("
+        if anchor not in delegate:
+            raise RuntimeError("Flutter AppDelegate 模板已变化，请检查通知代理配置。")
+        delegate = delegate.replace(
+            anchor,
+            "    UNUserNotificationCenter.current().delegate = self\n" + anchor,
+            1,
+        )
+        if "import UserNotifications" not in delegate:
+            delegate = "import UserNotifications\n" + delegate
+        delegate_path.write_text(delegate, encoding="utf-8")
+
     info_path = ios / "Runner/Info.plist"
     with info_path.open("rb") as source:
         info = plistlib.load(source)

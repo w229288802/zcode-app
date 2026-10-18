@@ -54,6 +54,7 @@ void main() async {
 
   // 通知: 初始化 + 点击通知的深链路由 (goRouterProvider 是全局 GoRouter 实例)
   await NotificationService.init();
+  await NotificationService.clearAll();
   NotificationService.onNavigate = goRouterProvider.go;
 
   // 恢复原生屏幕常亮标志 (仿 pipLines 恢复模式; 仅 Android 生效)
@@ -114,6 +115,7 @@ class _ZcodeAppState extends ConsumerState<ZcodeApp>
     // 后台挂起期间 WS 可能被系统静默掐断 (connect 无超时会永久卡住 /
     // 半开连接 onDone 不触发), 回前台必须主动探活并恢复
     if (state == AppLifecycleState.resumed) {
+      unawaited(NotificationService.clearAll());
       appLog.d('[App] 前台恢复, 探活 relay 连接');
       ref.read(relayClientProvider)?.revive();
       // 回前台: 小窗完全隐藏让位 (v5: 任何形态都不再以胶囊留在屏上,
