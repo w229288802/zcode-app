@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:zcode_app/core/notifications/notification_service.dart';
 
@@ -15,6 +16,7 @@ void main() {
 
   setUpAll(() async {
     debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    IOSFlutterLocalNotificationsPlugin.registerWith();
     binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (call) async {
       calls.add(call);
       if (call.method == 'initialize') return true;
