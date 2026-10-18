@@ -21,6 +21,7 @@ class _Relay extends RelayClient {
   bool ready = true;
   bool failSubscription = false;
   Completer<void>? subscriptionGate;
+  Completer<void>? rowsGate;
   int subscriptions = 0;
   int sends = 0;
 
@@ -76,7 +77,10 @@ class _Relay extends RelayClient {
     int? beforeRowId,
     int limit = 50,
     String? workspaceIdentity,
-  }) async => {'rows': [], 'hasMore': false};
+  }) async {
+    await rowsGate?.future;
+    return {'rows': [], 'hasMore': false};
+  }
 
   @override
   Future<Map<String, dynamic>> sendConversationCommandV4({
@@ -179,6 +183,30 @@ void main() {
     await sending;
     expect(relay.sends, 2);
     expect(relay.subscriptions, 2);
+  });
+
+  test('已有会话历史还在加载时，订阅就绪即可发送', () async {
+    final existingRelay = _Relay();
+    existingRelay.rowsGate = Completer<void>(); // 历史读取一直挂起
+    final existing = ChatNotifier(
+      existingRelay,
+      const ChatRef(taskId: 'session', workspacePath: '/test'),
+      preferredModelReader: () => null,
+      preferredModelSetter: (_) {},
+      mergeDiscovered: (_) {},
+    );
+    addTearDown(() {
+      existing.dispose();
+      existingRelay.dispose();
+    });
+
+    await _settle();
+    expect(existingRelay.subscriptions, 1);
+    await existing
+        .sendMessage('hello')
+        .timeout(const Duration(seconds: 3));
+    expect(existingRelay.sends, 1);
+    expect(existingRelay.subscriptions, 1);
   });
 
   test('订阅失败时不发送，再次发送可恢复订阅', () async {

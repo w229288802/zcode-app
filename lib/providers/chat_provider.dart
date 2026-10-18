@@ -834,6 +834,9 @@ class ChatNotifier extends StateNotifier<ChatState> {
   bool _initDone = false;
   bool _initRunning = false; // _init 进行中禁止 resubscribe (会取消 init 的帧监听)
   Future<void>? _initFuture;
+
+  /// _init 的订阅步骤完成 (成功或失败都会完成, 等待方不会挂死)
+  Completer<void>? _initSubscribed;
   Future<void>? _resubscribeFuture;
 
   /// V4 状态: 本地缓存的 rows (按 rowId 索引)。
@@ -1179,6 +1182,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
     }
     final sw = Stopwatch()..start();
     _initRunning = true;
+    final subscribed = _initSubscribed = Completer<void>();
     try {
       // bridge 复用 (网页端模式): 全局一个 bridge, 已开则零开销返回
       final bridgeKey = _ref.workspaceIdentity ?? _ref.workspacePath;
@@ -1207,6 +1211,8 @@ class ChatNotifier extends StateNotifier<ChatState> {
           if (c != null && !c.isCompleted) c.complete();
         }
       });
+      // 订阅已就绪: 发送消息只需等到这里, 不必等全量历史翻页拉完
+      if (!subscribed.isCompleted) subscribed.complete();
 
       // 双路竞速: 订阅流 snapshot / 行日志直读并行, 先到先渲染。
       // 流路不 await — 大会话的流快照可能迟到/缺席; _loadHistory 里
@@ -1242,6 +1248,16 @@ class ChatNotifier extends StateNotifier<ChatState> {
       _initDone = true;
     } finally {
       _initRunning = false;
+      if (!subscribed.isCompleted) subscribed.complete();
+      // 初始化期间 bridge 断过 (订阅被取消), 而 ready 恢复时因 _initRunning
+      // 跳过了重订阅 → 这里补上, 否则会话停止刷新、一直转圈
+      if (!_disposedNotifier &&
+          _taskId != null &&
+          _frameSub == null &&
+          _relay.isRpcReady) {
+        appLog.i('[Chat] _init 期间订阅丢失, 补订阅');
+        unawaited(_resubscribe().catchError((_) {}));
+      }
     }
   }
 
@@ -1293,11 +1309,15 @@ class ChatNotifier extends StateNotifier<ChatState> {
           rowsLoaded = true;
         }
         if (rowsLoaded) {
+          // 尾部已就绪 → 立即结束加载态; 更早历史在后台继续翻页补齐,
+          // 否则长会话切换进来会一直显示 Loading
+          state = state.copyWith(isLoadingHistory: false);
           // 翻页拉齐全部更早历史 (网页端同款: 打开即全量)。
           // 屏上无内容 → 逐页渐进渲染 (历史从顶部逐步长出);
           // 屏上已有内容 (缓存/重连) → 静默拉完一次对齐, 全程不跳。
           var pages = 0;
-          while (_hasMoreOlder &&
+          while (!_disposedNotifier &&
+              _hasMoreOlder &&
               _rowsFirstRowId != null &&
               _rowsFirstRowId! > 1 &&
               pages < 200) {
@@ -1308,6 +1328,7 @@ class ChatNotifier extends StateNotifier<ChatState> {
             if (!ok) break;
             pages++;
           }
+          if (_disposedNotifier) return; // 已切走: 不再写已销毁的 state
           _silentPagination = false;
           _rebuildMessagesFromRows();
           appLog.d(
@@ -2581,7 +2602,13 @@ class ChatNotifier extends StateNotifier<ChatState> {
   /// 模型 → 通知任务列表 → 订阅会话流。已有会话也要等待连接和订阅恢复。
   Future<void> _ensureSessionReady({required String taskTitle}) async {
     if (_taskId != null) {
-      if (_initRunning) await _initFuture;
+      // 只等订阅就绪; 长会话的全量历史翻页可能要很久, 不能让发送一直挂着
+      final subscribed = _initSubscribed;
+      if (_initRunning && subscribed != null) {
+        try {
+          await subscribed.future.timeout(const Duration(seconds: 20));
+        } on TimeoutException catch (_) {}
+      }
       await _relay.waitRpcReady(const Duration(seconds: 12));
       await _relay.v4Handshake();
       if (_resubscribeFuture != null || _frameSub == null) {

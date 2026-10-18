@@ -132,6 +132,9 @@ class RelayClient {
   /// 全局模型列表等账号级数据据此刷新 (重连/切工作区会自动重载)。
   Stream<bool> get onRpcReadyChange => _rpcReadyController.stream;
 
+  /// bridge 当前是否可发 RPC
+  bool get isRpcReady => _rpcReady;
+
   /// 等 RPC ready (同步检查 + stream 等待), 带超时。
   Future<void> waitRpcReady(Duration timeout) async {
     if (_rpcReady) return;
@@ -1532,7 +1535,29 @@ class RelayClient {
     // 非 broadcast: 缓冲 subscribe 等待期间到达的快照帧。
     _rpcReqId++;
     final id = _rpcReqId;
-    final controller = StreamController<V4Frame>();
+    final generation = _bridgeGeneration;
+    String? subscriptionId;
+    late final StreamController<V4Frame> controller;
+    // 调用方取消监听 (离开会话 / 重订阅) → 退订服务端 + 取消 listen。
+    // 不退订的话每切一次会话就多一个服务端订阅, 工作区级帧被重复推送,
+    // 切换越多越卡, 最终拖垮连接 (网页端离开会话同样会 unsubscribe)。
+    controller = StreamController<V4Frame>(
+      onCancel: () {
+        if (identical(_v4FrameSubs[id], controller)) _v4FrameSubs.remove(id);
+        // bridge 已重开: 旧订阅随旧 bridge 失效, 且 RPC 编号已重置,
+        // 此时再发 unlisten 会误伤新连接上同号的监听
+        if (generation != _bridgeGeneration || !_rpcReady) return;
+        _sendRpcFrameData(RpcCodec.encodeUnlisten(id));
+        final sid = subscriptionId;
+        if (sid != null && sid.isNotEmpty) {
+          unawaited(
+            unsubscribeConversationV4(subscriptionId: sid).catchError((e) {
+              _log('debug', 'V4 unsubscribe 失败 (忽略): $e');
+            }),
+          );
+        }
+      },
+    );
     _v4FrameSubs[id] = controller;
     _sendRpcFrameData(
       RpcCodec.encodeListen(id, 'zcode-agent', 'onDynamicConversationFrame', {
@@ -1554,7 +1579,7 @@ class RelayClient {
       final subData = subResp.body is Map
           ? Map<String, dynamic>.from(subResp.body as Map)
           : <String, dynamic>{};
-      final subscriptionId =
+      subscriptionId =
           subData['ack']?['subscriptionId'] as String? ??
           subData['subscriptionId'] as String? ??
           '';

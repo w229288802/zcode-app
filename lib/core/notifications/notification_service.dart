@@ -128,8 +128,43 @@ class NotificationService {
   // 事件通知 (仅后台时弹)
   // ================================================================
 
-  static bool get _isAppInBackground =>
-      WidgetsBinding.instance.lifecycleState != AppLifecycleState.resumed;
+  /// 是否真正处于后台。不能简单用 "lifecycleState != resumed":
+  /// iOS 从后台回来会先经过 hidden → inactive, 挂起期间积压的事件恰好在
+  /// 这时被处理 → 通知在用户打开 App 的瞬间才弹出。这里按迁移方向判定:
+  /// 离开 (resumed→inactive→hidden→paused) 到 hidden 起算后台;
+  /// 回来 (paused→hidden→inactive→resumed) 从离开 paused 那一刻起算前台。
+  static bool _inBackground = false;
+  static AppLifecycleState? _lastLifecycle;
+
+  static void debugResetLifecycle() {
+    _inBackground = false;
+    _lastLifecycle = null;
+  }
+
+  static void onLifecycleChanged(AppLifecycleState next) {
+    final prev = _lastLifecycle;
+    _lastLifecycle = next;
+    switch (next) {
+      case AppLifecycleState.paused:
+      case AppLifecycleState.detached:
+        _inBackground = true;
+      case AppLifecycleState.hidden:
+        // 从 paused 回来 = 正在回前台; 否则是正在离开
+        _inBackground = prev != AppLifecycleState.paused;
+      case AppLifecycleState.inactive:
+      case AppLifecycleState.resumed:
+        _inBackground = false;
+    }
+  }
+
+  static bool get _isAppInBackground {
+    // 未接入生命周期回调时 (测试/早期启动) 退回原判定
+    if (_lastLifecycle == null) {
+      return WidgetsBinding.instance.lifecycleState !=
+          AppLifecycleState.resumed;
+    }
+    return _inBackground;
+  }
 
   /// 任务/本轮回复完成
   static void notifyTurnComplete({

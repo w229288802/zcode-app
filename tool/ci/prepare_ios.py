@@ -25,6 +25,54 @@ def main():
             delegate = "import UserNotifications\n" + delegate
         delegate_path.write_text(delegate, encoding="utf-8")
 
+    # iOS 切后台几秒就挂起 App, WebSocket 停收, 任务完成通知要等打开 App 才到。
+    # 进后台时申请后台执行时间 (系统通常给约 30 秒), 让进行中的回复有机会
+    # 收完并弹通知; 用通知中心监听, 兼容 AppDelegate 与 UIScene 两种生命周期。
+    delegate = delegate_path.read_text(encoding="utf-8")
+    if "ZcodeBackgroundKeeper" not in delegate:
+        anchor = "    return super.application("
+        if anchor not in delegate:
+            raise RuntimeError("Flutter AppDelegate 模板已变化，请检查后台保活配置。")
+        delegate = delegate.replace(
+            anchor, "    ZcodeBackgroundKeeper.shared.start()\n" + anchor, 1
+        )
+        delegate += '''
+
+final class ZcodeBackgroundKeeper {
+  static let shared = ZcodeBackgroundKeeper()
+  private var task: UIBackgroundTaskIdentifier = .invalid
+  private var started = false
+
+  func start() {
+    if started { return }
+    started = true
+    let center = NotificationCenter.default
+    center.addObserver(
+      forName: UIApplication.didEnterBackgroundNotification,
+      object: nil, queue: .main
+    ) { [weak self] _ in self?.begin() }
+    center.addObserver(
+      forName: UIApplication.willEnterForegroundNotification,
+      object: nil, queue: .main
+    ) { [weak self] _ in self?.end() }
+  }
+
+  private func begin() {
+    end()
+    task = UIApplication.shared.beginBackgroundTask(withName: "zcode-relay") {
+      [weak self] in self?.end()
+    }
+  }
+
+  private func end() {
+    guard task != .invalid else { return }
+    UIApplication.shared.endBackgroundTask(task)
+    task = .invalid
+  }
+}
+'''
+        delegate_path.write_text(delegate, encoding="utf-8")
+
     info_path = ios / "Runner/Info.plist"
     with info_path.open("rb") as source:
         info = plistlib.load(source)

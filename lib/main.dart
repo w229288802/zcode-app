@@ -112,6 +112,8 @@ class _ZcodeAppState extends ConsumerState<ZcodeApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    // 先更新前后台判定: 回前台途中处理的积压事件不再弹通知
+    NotificationService.onLifecycleChanged(state);
     // 后台挂起期间 WS 可能被系统静默掐断 (connect 无超时会永久卡住 /
     // 半开连接 onDone 不触发), 回前台必须主动探活并恢复
     if (state == AppLifecycleState.resumed) {

@@ -122,6 +122,30 @@ void main() {
     expect(calls.where((call) => call.method == 'show'), hasLength(1));
   });
 
+  test('从后台回到前台途中处理的积压事件不弹通知', () async {
+    // 离开: resumed → inactive → hidden → paused
+    for (final s in [
+      AppLifecycleState.resumed,
+      AppLifecycleState.inactive,
+      AppLifecycleState.hidden,
+      AppLifecycleState.paused,
+    ]) {
+      NotificationService.onLifecycleChanged(s);
+    }
+    NotificationService.notifyTurnComplete(taskId: 'bg', workspaceKey: '/w');
+    await Future<void>.delayed(Duration.zero);
+    expect(calls.where((call) => call.method == 'show'), hasLength(1));
+
+    // 回来: paused → hidden → inactive, 期间到达的事件属于打开 App 时的补发
+    NotificationService.onLifecycleChanged(AppLifecycleState.hidden);
+    NotificationService.notifyTurnComplete(taskId: 'late', workspaceKey: '/w');
+    NotificationService.onLifecycleChanged(AppLifecycleState.inactive);
+    NotificationService.notifyTurnComplete(taskId: 'late', workspaceKey: '/w');
+    await Future<void>.delayed(Duration.zero);
+    expect(calls.where((call) => call.method == 'show'), hasLength(1));
+    NotificationService.debugResetLifecycle();
+  });
+
   test('清除通知失败不影响打开应用', () async {
     failClear = true;
     await expectLater(NotificationService.clearAll(), completes);
