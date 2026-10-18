@@ -129,7 +129,7 @@ flutter test             # 跑全部 widget / 单元测试
 ### GitHub Actions 打包 iOS
 
 1. 将代码推送到 GitHub 后，打开仓库的 **Actions → Build iOS IPA (unsigned)**。
-2. 点击 **Run workflow** 手动打包；推送到 `main` 分支也会自动触发。
+2. 工作流进入默认分支后，可点击 **Run workflow** 手动打包；推送到 `main` 或 `ios` 分支也会自动触发。
 3. 构建成功后，在该次运行页面的 **Artifacts** 下载 `zcode-app-ios-unsigned`，解压得到 `zcode-app-ios-unsigned.ipa`。产物保留 14 天。
 
 工作流使用 macOS 和 Flutter 3.44.2，无需配置 Apple 开发者证书或 GitHub Secrets。
