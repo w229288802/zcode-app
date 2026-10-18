@@ -115,7 +115,7 @@ session.event 帧 (按 kind 区分阶段):
 - Android 设备或模拟器
 - 一台在线的 ZCode 桌面端 Host（用于实际 AI 推理）
 
-> ℹ️ **关于 iOS**：项目未配置 iOS target，也未在 iOS 上测试过。理论上 Flutter 跨平台、依赖也未声明 iOS 不兼容，**但能否正常运行未经确认**——可自行 `flutter create -i ios .` 补全 iOS 工程后实测，欢迎反馈。
+> ℹ️ **关于 iOS**：仓库提供 GitHub Actions 未签名 IPA 打包工作流，构建时自动生成 iOS 工程，最低支持 iOS 15.5。**尚未在 iOS 上测试**，通知、后台保活、悬浮窗等能力仍需按平台适配和验证。
 
 ### 安装与运行
 
@@ -125,6 +125,18 @@ flutter run              # 在已连接的设备 / 模拟器上运行
 flutter analyze          # lint + 静态分析 (flutter_lints)
 flutter test             # 跑全部 widget / 单元测试
 ```
+
+### GitHub Actions 打包 iOS
+
+1. 将代码推送到 GitHub 后，打开仓库的 **Actions → Build iOS IPA (unsigned)**。
+2. 点击 **Run workflow** 手动打包；推送到 `main` 分支也会自动触发。
+3. 构建成功后，在该次运行页面的 **Artifacts** 下载 `zcode-app-ios-unsigned`，解压得到 `zcode-app-ios-unsigned.ipa`。产物保留 14 天。
+
+工作流使用 macOS 和 Flutter 3.44.2，无需配置 Apple 开发者证书或 GitHub Secrets。
+生成的 IPA **未签名**，安装到 iPhone / iPad 前需要自行使用证书和描述文件签名；TestFlight / App Store 发布还需配置正式签名和导出流程。
+
+iOS 工程只在 CI 中生成，Bundle ID 为 `com.zcode.zcodeApp`，应用名称和图标沿用 ZCode。
+构建配置由 `tool/ci/prepare_ios.py` 补全，包括最低 iOS 版本、相机和相册权限说明以及 CocoaPods 配置。
 
 ### 生成应用图标
 

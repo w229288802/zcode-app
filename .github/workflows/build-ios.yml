@@ -1,0 +1,76 @@
+name: Build iOS IPA (unsigned)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.2'
+          channel: stable
+          cache: true
+
+      - name: Generate iOS project
+        shell: bash
+        run: |
+          set -euo pipefail
+          flutter config --no-enable-swift-package-manager
+          # 在临时目录生成工程，避免 flutter create 改写现有项目文件。
+          flutter create --platforms=ios --project-name=zcode_app --org=com.zcode --no-pub "$RUNNER_TEMP/zcode-ios"
+          cp -R "$RUNNER_TEMP/zcode-ios/ios" ios
+          python3 tool/ci/prepare_ios.py
+
+      - name: Install dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Generate iOS app icon
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/ios-icons.yaml" <<'YAML'
+          flutter_launcher_icons:
+            android: false
+            ios: true
+            image_path: assets/images/app_icon.png
+            remove_alpha_ios: true
+          YAML
+          dart run flutter_launcher_icons -f "$RUNNER_TEMP/ios-icons.yaml"
+
+      - name: Build unsigned iOS app
+        run: flutter build ios --release --no-codesign
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/ios/unsigned/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ios/unsigned/Payload/
+          cd build/ios/unsigned
+          /usr/bin/zip -r -y ../zcode-app-ios-unsigned.ipa Payload
+          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+          ### iOS 打包完成
+
+          下载本次运行的 **zcode-app-ios-unsigned** artifact，解压后得到 IPA。
+          此包未签名，安装到 iPhone / iPad 前需要自行签名，不能直接用于 TestFlight / App Store。
+          iOS 功能尚未经过实机验证。
+          SUMMARY
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: zcode-app-ios-unsigned
+          path: build/ios/zcode-app-ios-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
