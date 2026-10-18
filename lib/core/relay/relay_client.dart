@@ -465,6 +465,8 @@ class RelayClient {
         _log('error', 'Server error: $code');
         if (!_errorController.isClosed)
           _errorController.add('Server error: $code');
+        // 认证阶段的服务端错误 (链接失效/密码已改) 立即失败, 不干等 15s 超时
+        _failAuth('Auth failed: $code');
       default:
         _log('debug', 'RECV [$type]');
     }
@@ -494,11 +496,18 @@ class RelayClient {
     final pairStatus = msg['pair_status'] as String?;
     _log('info', 'Auth ACK: terminal_sid=$terminalSid, pair=$pairStatus');
 
+    final c = _authCompleter;
+    if (c == null || c.isCompleted) return;
     if (pairStatus == 'matched') {
-      _authCompleter?.complete();
+      c.complete();
     } else {
-      _authCompleter?.completeError('Pair status: $pairStatus');
+      c.completeError('Pair status: $pairStatus');
     }
+  }
+
+  void _failAuth(String reason) {
+    final c = _authCompleter;
+    if (c != null && !c.isCompleted) c.completeError(reason);
   }
 
   void _handleData(Map<String, dynamic> payload) {
@@ -966,6 +975,7 @@ class RelayClient {
 
   void _onDone() {
     _log('info', 'WebSocket closed');
+    _failAuth('Auth failed: socket closed before auth_ack');
     _heartbeatTimer?.cancel();
     _rpcReady = false;
     if (!_rpcReadyController.isClosed) _rpcReadyController.add(false);
@@ -1935,15 +1945,25 @@ class RelayClient {
   }
 
   /// attachmentReadV4 循环读回附件全部字节 (512KB/次, 网页端同款)。
-  /// 分段 base64 长度恒为 4 的倍数 → 直接字符串拼接后一次解码。
+  ///
+  /// 3.14.1 响应: {dataBase64, mediaType, totalBytes, nextOffset: int|null},
+  /// 旧版字段名为 bytes, 两者都兼容。历史消息附件需带 target
+  /// ({rowId, entityId}) + attachmentIndex (两者必须同时提供)。
+  /// 每段单独解码再拼接, 不依赖分段 base64 长度恰为 4 的倍数。
   Future<Uint8List> attachmentReadAllV4({
     required String workspacePath,
     String? workspaceIdentity,
     required String sessionId,
     required String ref,
+    int? rowId,
+    String? entityId,
+    int? attachmentIndex,
   }) async {
-    final b64 = StringBuffer();
+    final withTarget =
+        rowId != null && entityId != null && attachmentIndex != null;
+    final out = BytesBuilder(copy: false);
     var offset = 0;
+    int? totalBytes;
     while (true) {
       final resp = await _rpcCall('zcode-agent', 'attachmentReadV4', [
         {
@@ -1951,6 +1971,8 @@ class RelayClient {
           if (workspaceIdentity != null) 'workspaceIdentity': workspaceIdentity,
           'sessionId': sessionId,
           'ref': ref,
+          if (withTarget) 'target': {'rowId': rowId, 'entityId': entityId},
+          if (withTarget) 'attachmentIndex': attachmentIndex,
           'offset': offset,
           'limit': 524288,
         },
@@ -1959,16 +1981,24 @@ class RelayClient {
         throw StateError('attachmentReadV4 响应非 Map: ${resp.body}');
       }
       final body = resp.body as Map<String, dynamic>;
-      final chunk = body['bytes'] as String? ?? '';
+      final total = body['totalBytes'];
+      if (total is num) totalBytes ??= total.toInt();
+      final chunk =
+          body['dataBase64'] as String? ?? body['bytes'] as String? ?? '';
       if (chunk.isEmpty) break; // 防御: 空分片 + nextOffset 会死循环
-      b64.write(chunk);
+      out.add(base64Decode(chunk));
       final next = body['nextOffset'];
-      if (next is! num) break; // 无 nextOffset = 读完
+      if (next is! num) break; // nextOffset 为 null/缺省 = 读完
       final nextOffset = next.toInt();
       if (nextOffset <= offset) break; // 防御: 服务端进度不前进
+      if (totalBytes != null && nextOffset >= totalBytes) break;
       offset = nextOffset;
     }
-    return base64Decode(b64.toString());
+    final bytes = out.takeBytes();
+    if (bytes.isEmpty) {
+      throw StateError('attachmentReadV4 读回 0 字节 (ref=$ref)');
+    }
+    return bytes;
   }
 
   // V4 frame 订阅分发表 (替代 _eventSubs for V4 frames)

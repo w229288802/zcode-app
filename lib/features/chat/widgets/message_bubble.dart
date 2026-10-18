@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io' show File;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -62,8 +64,9 @@ class MessageBubble extends StatefulWidget {
   )?
   subagentLiveRefresh;
 
-  /// ★ 附件图片读回器 (V4 ref → bytes; null = 不读回只显示占位)
-  final Future<Uint8List?> Function(String attachmentRef)? attachmentLoader;
+  /// ★ 附件读回器 (V4 附件 → bytes; null = 不读回只显示占位)
+  final Future<Uint8List?> Function(UserAttachment attachment)?
+  attachmentLoader;
 
   /// ★ 工作区路径 (markdown 文件链接 / 变更文件条目 → 预览页拼相对路径)
   final String workspacePath;
@@ -849,11 +852,12 @@ class MessageBubbleState extends State<MessageBubble> {
 }
 
 /// 附件缩略图 (用户消息): localBytes 优先 (发送中乐观回显, 零开销),
-/// 否则按 ref 经 attachmentLoader 读回 (读回结果缓存在 provider 侧,
-/// 32MB 上限; 加载中显示占位)。
+/// 否则经 attachmentLoader 读回 (读回结果缓存在 provider 侧, 32MB 上限;
+/// 加载中显示占位)。图片点击全屏查看; 非图片附件只显示文件名,
+/// 点击时才读回并交给系统分享面板 (可选"用其他应用打开")。
 class _AttachmentThumb extends StatefulWidget {
   final UserAttachment attachment;
-  final Future<Uint8List?> Function(String attachmentRef)? loader;
+  final Future<Uint8List?> Function(UserAttachment attachment)? loader;
 
   const _AttachmentThumb({required this.attachment, this.loader});
 
@@ -863,12 +867,14 @@ class _AttachmentThumb extends StatefulWidget {
 
 class _AttachmentThumbState extends State<_AttachmentThumb> {
   Uint8List? _bytes;
+  bool _loading = false;
+  bool _failed = false;
 
   @override
   void initState() {
     super.initState();
     _bytes = widget.attachment.localBytes;
-    if (_bytes == null) unawaited(_load());
+    if (_bytes == null && widget.attachment.isImage) unawaited(_load());
   }
 
   @override
@@ -878,28 +884,212 @@ class _AttachmentThumbState extends State<_AttachmentThumb> {
     if (widget.attachment.localBytes != null &&
         widget.attachment.localBytes != _bytes) {
       _bytes = widget.attachment.localBytes;
+    } else if (_bytes == null &&
+        widget.attachment.isImage &&
+        widget.attachment.readRef != old.attachment.readRef) {
+      unawaited(_load());
     }
   }
 
-  Future<void> _load() async {
-    final ref = widget.attachment.ref;
-    if (ref.isEmpty || widget.loader == null) return;
-    final bytes = await widget.loader!(ref);
-    if (mounted && bytes != null) setState(() => _bytes = bytes);
+  Future<Uint8List?> _load() async {
+    if (_bytes != null) return _bytes;
+    if (_loading) return null;
+    final a = widget.attachment;
+    if (a.readRef.isEmpty || widget.loader == null) return null;
+    setState(() {
+      _loading = true;
+      _failed = false;
+    });
+    final bytes = await widget.loader!(a);
+    if (!mounted) return bytes;
+    setState(() {
+      _loading = false;
+      _bytes = bytes;
+      _failed = bytes == null;
+    });
+    return bytes;
+  }
+
+  Future<void> _open() async {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    final box = context.findRenderObject() as RenderBox?;
+    final origin = box == null
+        ? null
+        : box.localToGlobal(Offset.zero) & box.size;
+    final bytes = _bytes ?? await _load();
+    if (!mounted) return;
+    if (bytes == null) {
+      messenger?.showSnackBar(
+        const SnackBar(content: Text('附件读取失败, 请确认桌面端在线后重试')),
+      );
+      return;
+    }
+    final a = widget.attachment;
+    if (a.isImage) {
+      await Navigator.of(context).push(
+        PageRouteBuilder<void>(
+          opaque: false,
+          barrierColor: Colors.black,
+          transitionDuration: AppDur.base,
+          reverseTransitionDuration: AppDur.fast,
+          pageBuilder: (_, __, ___) =>
+              _AttachmentImageViewer(bytes: bytes, attachment: a),
+          transitionsBuilder: (_, anim, __, child) => FadeTransition(
+            opacity: CurvedAnimation(parent: anim, curve: AppEase.out),
+            child: child,
+          ),
+        ),
+      );
+      return;
+    }
+    await _shareAttachmentBytes(bytes, a, origin);
   }
 
   @override
   Widget build(BuildContext context) {
-    final bytes = _bytes;
-    if (bytes != null) {
-      return Image.memory(bytes, fit: BoxFit.cover, gaplessPlayback: true);
-    }
-    // 加载中/读回失败占位 (纯图片消息时撑起 88px 方块)
     final theme = Theme.of(context);
+    final a = widget.attachment;
+    final bytes = _bytes;
+    final Widget child;
+    if (bytes != null && a.isImage) {
+      child = Image.memory(
+        bytes,
+        fit: BoxFit.cover,
+        gaplessPlayback: true,
+        errorBuilder: (_, __, ___) => _placeholder(theme, failed: true),
+      );
+    } else if (a.isImage) {
+      // 加载中/读回失败占位 (纯图片消息时撑起 88px 方块)
+      child = _placeholder(theme, failed: _failed);
+    } else {
+      child = _fileTile(theme);
+    }
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(onTap: _open, child: child),
+    );
+  }
+
+  Widget _placeholder(ThemeData theme, {required bool failed}) {
     return Container(
       color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
       alignment: Alignment.center,
-      child: const Icon(Icons.image_outlined, size: 20, color: Colors.white70),
+      child: _loading
+          ? const SizedBox(
+              width: AppSpacing.lg,
+              height: AppSpacing.lg,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : Icon(
+              failed ? Icons.broken_image_outlined : Icons.image_outlined,
+              size: 20,
+              color: Colors.white70,
+            ),
+    );
+  }
+
+  Widget _fileTile(ThemeData theme) {
+    return Container(
+      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.5),
+      padding: const EdgeInsets.all(AppSpacing.xs),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _loading
+              ? const SizedBox(
+                  width: AppSpacing.lg,
+                  height: AppSpacing.lg,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Icon(
+                  widget.attachment.mime.contains('pdf')
+                      ? Icons.picture_as_pdf_outlined
+                      : Icons.insert_drive_file_outlined,
+                  size: 24,
+                  color: Colors.white70,
+                ),
+          const SizedBox(height: AppSpacing.xs),
+          Text(
+            widget.attachment.fileName,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            textAlign: TextAlign.center,
+            style: const TextStyle(
+              fontSize: AppTextSizes.caption,
+              color: Colors.white70,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 附件写入临时目录后交给系统分享面板 (iOS/Android 均可选其他应用打开)
+Future<void> _shareAttachmentBytes(
+  Uint8List bytes,
+  UserAttachment a,
+  Rect? origin,
+) async {
+  final dir = await getTemporaryDirectory();
+  final safeName = a.fileName.isEmpty
+      ? 'attachment'
+      : a.fileName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+  final file = File('${dir.path}/$safeName');
+  await file.writeAsBytes(bytes, flush: true);
+  await SharePlus.instance.share(
+    ShareParams(
+      files: [XFile(file.path, mimeType: a.mime, name: safeName)],
+      sharePositionOrigin: origin,
+    ),
+  );
+}
+
+/// 附件图片全屏查看 (双指缩放, 点击/返回关闭, 右上角可分享/保存)
+class _AttachmentImageViewer extends StatelessWidget {
+  final Uint8List bytes;
+  final UserAttachment attachment;
+
+  const _AttachmentImageViewer({required this.bytes, required this.attachment});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        foregroundColor: Colors.white,
+        title: Text(
+          attachment.fileName,
+          style: const TextStyle(fontSize: AppTextSizes.bodySm),
+          overflow: TextOverflow.ellipsis,
+        ),
+        actions: [
+          Builder(
+            builder: (ctx) => IconButton(
+              icon: const Icon(Icons.ios_share),
+              tooltip: '分享/保存',
+              onPressed: () {
+                final box = ctx.findRenderObject() as RenderBox?;
+                final origin = box == null
+                    ? null
+                    : box.localToGlobal(Offset.zero) & box.size;
+                unawaited(_shareAttachmentBytes(bytes, attachment, origin));
+              },
+            ),
+          ),
+        ],
+      ),
+      body: GestureDetector(
+        onTap: () => Navigator.of(context).maybePop(),
+        child: Center(
+          child: InteractiveViewer(
+            minScale: 1,
+            maxScale: 5,
+            child: Image.memory(bytes, fit: BoxFit.contain),
+          ),
+        ),
+      ),
     );
   }
 }

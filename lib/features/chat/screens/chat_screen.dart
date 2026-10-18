@@ -659,9 +659,9 @@ class _ChatScaffoldState extends ConsumerState<_ChatScaffold> {
               .read(chatProvider(widget.chatRef).notifier)
               .refreshSubagentDetail(childSessionId),
           // 附件图片读回 (V4 ref → bytes, provider 侧 32MB 缓存)
-          attachmentLoader: (attachmentRef) => ref
+          attachmentLoader: (attachment) => ref
               .read(chatProvider(widget.chatRef).notifier)
-              .loadAttachmentBytes(attachmentRef),
+              .loadAttachmentBytes(attachment),
           onRespondPermission:
               (permissionId, optionId, decision, options, traceId) {
                 ref

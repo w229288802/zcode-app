@@ -520,15 +520,20 @@ class QueuedMessage {
 }
 
 /// 用户消息附件 (wire: userInput 行 attachments[] 元素, V4 分片上传产物)。
-/// [bytes] 是整型字节数 (wire 字段), 不是内容; previewRef 忽略不用。
+/// [bytes] 是整型字节数 (wire 字段), 不是内容。
 /// [localBytes] 仅乐观回显时存在 (发送前本地已有字节, 不上 wire);
-/// row 落地后走 ref + attachmentReadV4 读回渲染。
+/// row 落地后走 attachmentReadV4 读回: 读 previewRef ?? ref, 并带上
+/// 所在行的 target ({rowId, entityId}) + attachmentIndex (3.14.1 网页端同款)。
 class UserAttachment {
   final String ref;
   final String fileName;
   final String mime;
   final int bytes;
   final Uint8List? localBytes;
+  final String? previewRef;
+  final int? rowId;
+  final String? entityId;
+  final int? index;
 
   const UserAttachment({
     required this.ref,
@@ -536,16 +541,35 @@ class UserAttachment {
     required this.mime,
     required this.bytes,
     this.localBytes,
+    this.previewRef,
+    this.rowId,
+    this.entityId,
+    this.index,
   });
 
-  factory UserAttachment.wire(V4AttachmentMeta m, {Uint8List? localBytes}) =>
-      UserAttachment(
-        ref: m.ref,
-        fileName: m.fileName,
-        mime: m.mime,
-        bytes: m.bytes,
-        localBytes: localBytes,
-      );
+  factory UserAttachment.wire(
+    V4AttachmentMeta m, {
+    Uint8List? localBytes,
+    int? rowId,
+    String? entityId,
+    int? index,
+  }) => UserAttachment(
+    ref: m.ref,
+    fileName: m.fileName,
+    mime: m.mime,
+    bytes: m.bytes,
+    localBytes: localBytes,
+    previewRef: m.previewRef,
+    rowId: rowId,
+    entityId: entityId,
+    index: index,
+  );
+
+  /// 实际读回用的引用 (previewRef 优先)
+  String get readRef =>
+      (previewRef != null && previewRef!.isNotEmpty) ? previewRef! : ref;
+
+  bool get isImage => mime.toLowerCase().startsWith('image/');
 }
 
 /// 待发送附件 (composer 选图产物; 上传由 [ChatNotifier] 分片执行)。
@@ -2260,7 +2284,13 @@ class ChatNotifier extends StateNotifier<ChatState> {
               role: 'user',
               content: row.text,
               attachments: [
-                for (final a in row.attachments) UserAttachment.wire(a),
+                for (var i = 0; i < row.attachments.length; i++)
+                  UserAttachment.wire(
+                    row.attachments[i],
+                    rowId: row.rowId,
+                    entityId: row.entityId,
+                    index: i,
+                  ),
               ],
             ),
           );
@@ -2704,17 +2734,35 @@ class ChatNotifier extends StateNotifier<ChatState> {
 
   /// 读回附件字节 (历史消息图片渲染): ref 缓存命中直接返回; 未命中走
   /// attachmentReadV4 循环读 (512KB/次) 并写缓存 (总量 32MB, 超限丢最早)。
-  Future<Uint8List?> loadAttachmentBytes(String ref) async {
+  Future<Uint8List?> loadAttachmentBytes(UserAttachment a) async {
+    if (a.localBytes != null) return a.localBytes;
+    final ref = a.readRef;
     if (ref.isEmpty) return null;
     final cached = _attachmentCacheGet(ref);
     if (cached != null) return cached;
     try {
-      final bytes = await _relay.attachmentReadAllV4(
-        workspacePath: _ref.workspacePath,
-        workspaceIdentity: _ref.workspaceIdentity,
-        sessionId: _taskId ?? '',
-        ref: ref,
-      );
+      Uint8List bytes;
+      try {
+        bytes = await _relay.attachmentReadAllV4(
+          workspacePath: _ref.workspacePath,
+          workspaceIdentity: _ref.workspaceIdentity,
+          sessionId: _taskId ?? '',
+          ref: ref,
+          rowId: a.rowId,
+          entityId: a.entityId,
+          attachmentIndex: a.index,
+        );
+      } catch (e) {
+        // 旧版桌面端不认 target/attachmentIndex/previewRef → 退回仅按 ref 读
+        if (a.entityId == null && ref == a.ref) rethrow;
+        appLog.d('[Chat] 附件带 target 读回失败, 改用 ref 重试: $e');
+        bytes = await _relay.attachmentReadAllV4(
+          workspacePath: _ref.workspacePath,
+          workspaceIdentity: _ref.workspaceIdentity,
+          sessionId: _taskId ?? '',
+          ref: a.ref,
+        );
+      }
       _attachmentCachePut(ref, bytes);
       return bytes;
     } catch (e) {

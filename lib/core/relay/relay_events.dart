@@ -603,11 +603,15 @@ class V4AttachmentMeta {
   /// 字节数 (wire 为整型长度, 非内容)
   final int bytes;
 
+  /// 预览引用 (3.14.1 网页端读回优先用 previewRef, 缺省回落 ref)
+  final String? previewRef;
+
   const V4AttachmentMeta({
     required this.ref,
     required this.fileName,
     required this.mime,
     required this.bytes,
+    this.previewRef,
   });
 
   factory V4AttachmentMeta.fromJson(Map<String, dynamic> j) => V4AttachmentMeta(
@@ -615,6 +619,7 @@ class V4AttachmentMeta {
     fileName: j['fileName'] as String? ?? '',
     mime: j['mime'] as String? ?? '',
     bytes: (j['bytes'] as num?)?.toInt() ?? 0,
+    previewRef: j['previewRef'] as String?,
   );
 }
 
