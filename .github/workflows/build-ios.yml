@@ -12,9 +12,17 @@ jobs:
   build:
     runs-on: macos-15
     timeout-minutes: 45
+    env:
+      # device_info_plus 12.4.0 要求 Xcode >= 26.1.1。
+      DEVELOPER_DIR: /Applications/Xcode_26.1.1.app/Contents/Developer
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Check Xcode and iOS SDK
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
 
       - uses: subosito/flutter-action@v2
         with:

@@ -132,7 +132,8 @@ flutter test             # 跑全部 widget / 单元测试
 2. 工作流进入默认分支后，可点击 **Run workflow** 手动打包；推送到 `main` 或 `ios` 分支也会自动触发。
 3. 构建成功后，在该次运行页面的 **Artifacts** 下载 `zcode-app-ios-unsigned`，解压得到 `zcode-app-ios-unsigned.ipa`。产物保留 14 天。
 
-工作流使用 macOS 和 Flutter 3.44.2，无需配置 Apple 开发者证书或 GitHub Secrets。
+工作流使用 macOS、Xcode 26.1.1 和 Flutter 3.44.2，无需配置 Apple 开发者证书或 GitHub Secrets。
+通过 `DEVELOPER_DIR` 显式选择 Xcode，满足 `device_info_plus 12.4.0` 的编译要求，避免使用构建镜像默认的旧 SDK。
 生成的 IPA **未签名**，安装到 iPhone / iPad 前需要自行使用证书和描述文件签名；TestFlight / App Store 发布还需配置正式签名和导出流程。
 
 iOS 工程只在 CI 中生成，Bundle ID 为 `com.zcode.zcodeApp`，应用名称和图标沿用 ZCode。
